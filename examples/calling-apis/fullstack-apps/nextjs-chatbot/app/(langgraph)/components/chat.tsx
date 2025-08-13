@@ -1,11 +1,8 @@
 "use client";
 
-import { useQueryState } from "nuqs";
-import { FormEventHandler, useEffect, useRef, useState } from "react";
+import { FormEventHandler, useRef, useState } from "react";
 
 import { EnsureAPIAccessPopup } from "@/components/auth0-ai/FederatedConnections/popup";
-import { FederatedConnectionInterrupt } from "@auth0/ai/interrupts";
-import { useStream } from "@langchain/langgraph-sdk/react";
 
 const useFocus = () => {
   const htmlElRef = useRef<HTMLInputElement>(null);
@@ -18,69 +15,157 @@ const useFocus = () => {
   return [htmlElRef, setFocus] as const;
 };
 
-export default function Chat() {
-  const [threadId, setThreadId] = useQueryState("threadId");
-  const [input, setInput] = useState("");
-  const thread = useStream({
-    apiUrl: `${process.env.NEXT_PUBLIC_URL}/api/langgraph`, // Update this with your domain URL (e.g process.env.NEXT_PUBLIC_API_URL)
-    assistantId: "agent",
-    threadId,
+interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+}
 
-    onThreadId: setThreadId,
-    onError: (err) => {
-      console.dir(err);
-    },
-  });
+export default function Chat() {
+  const [input, setInput] = useState("");
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [interrupt, setInterrupt] = useState<any>(null);
   const [inputRef, setInputFocus] = useFocus();
 
-  useEffect(() => {
-    if (thread.isLoading) {
-      return;
-    }
-    setInputFocus();
-  }, [thread.isLoading, setInputFocus]);
-
-  // //When the user submits a message, add it to the list of messages and resume the conversation.
   const handleSubmit: FormEventHandler<HTMLFormElement> = async (e) => {
     e.preventDefault();
-    thread.submit(
-      { messages: [{ type: "human", content: input }] },
-      {
-        optimisticValues: (prev) => ({
-          messages: [
-            ...((prev?.messages as []) ?? []),
-            { type: "human", content: input, id: "temp" },
-          ],
-        }),
-      }
-    );
+    
+    if (!input.trim() || isLoading) return;
+    
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: "user",
+      content: input,
+    };
+    
+    setMessages(prev => [...prev, userMessage]);
     setInput("");
+    setIsLoading(true);
+    setInterrupt(null);
+
+    try {
+      const response = await fetch("/api/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messages: [...messages, userMessage].map(msg => ({
+            role: msg.role,
+            content: msg.content,
+          })),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error("No reader available");
+      }
+
+      let assistantMessage: Message = {
+        id: (Date.now() + 1).toString(),
+        role: "assistant",
+        content: "",
+      };
+
+      setMessages(prev => [...prev, assistantMessage]);
+
+      const decoder = new TextDecoder();
+      
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          break;
+        }
+
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n');
+        
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            
+            if (data === '[DONE]') {
+              setIsLoading(false);
+              setInputFocus();
+              return;
+            }
+            
+            if (data.startsWith('AUTH0_AI_INTERRUPTION:')) {
+              const interruptData = JSON.parse(data.slice(22));
+              setInterrupt({
+                value: interruptData,
+                ns: ["auth0", "interrupt"],
+              });
+              setIsLoading(false);
+              return;
+            }
+            
+            try {
+              const parsed = JSON.parse(data);
+              
+              if (parsed.type === "content" && parsed.content) {
+                setMessages(prev => 
+                  prev.map(msg => 
+                    msg.id === assistantMessage.id 
+                      ? { ...msg, content: parsed.content }
+                      : msg
+                  )
+                );
+              } else if (parsed.type === "error") {
+                throw new Error(parsed.error);
+              }
+            } catch (parseError) {
+              // Ignore parsing errors for malformed chunks
+              console.warn("Failed to parse chunk:", data);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error in chat:", error);
+      setMessages(prev => [...prev, {
+        id: (Date.now() + 2).toString(),
+        role: "assistant",
+        content: "Sorry, I encountered an error processing your request.",
+      }]);
+    } finally {
+      setIsLoading(false);
+      setInputFocus();
+    }
+  };
+
+  const handleInterruptFinish = () => {
+    setInterrupt(null);
+    // Optionally, you could re-submit the last message here
   };
 
   return (
     <div className="flex flex-col gap-4 w-full max-w-md py-12 sm:py-24 px-4 sm:px-0 mx-auto stretch">
-      {thread.messages
-        .filter((m) => m.content && ["human", "ai"].includes(m.type))
+      {messages
+        .filter((m) => m.content && ["user", "assistant"].includes(m.role))
         .map((message) => (
           <div key={message.id} className="whitespace-pre-wrap">
-            {message.type === "human" ? "User: " : "AI: "}
-            {message.content as string}
+            {message.role === "user" ? "User: " : "AI: "}
+            {message.content}
           </div>
         ))}
 
-      {thread.interrupt &&
-      FederatedConnectionInterrupt.isInterrupt(thread.interrupt.value) ? (
-        <div
-          key={thread.interrupt.ns?.join("")}
-          className="whitespace-pre-wrap"
-        >
+      {interrupt ? (
+        <div className="whitespace-pre-wrap">
           <EnsureAPIAccessPopup
-            interrupt={thread.interrupt.value}
-            onFinish={() => thread.submit(null)}
+            interrupt={interrupt.value}
+            onFinish={handleInterruptFinish}
             connectWidget={{
-              title: thread.interrupt.value.message,
-              description: "Description...",
-              action: { label: "Check" },
+              title: interrupt.value.message || "Authorization Required",
+              description: "Please authorize access to continue...",
+              action: { label: "Authorize" },
             }}
           />
         </div>
@@ -92,8 +177,8 @@ export default function Chat() {
           value={input}
           ref={inputRef}
           placeholder="Say something..."
-          readOnly={thread.isLoading}
-          disabled={thread.isLoading}
+          readOnly={isLoading}
+          disabled={isLoading}
           onChange={(e) => setInput(e.target.value)}
           autoFocus
         />

@@ -1,8 +1,0 @@
-{
-  "node_version": "20",
-  "graphs": {
-    "agent": "./app/(langgraph)/lib/agent.ts:graph"
-  },
-  "env": ".env.local",
-  "dependencies": ["."]
-}

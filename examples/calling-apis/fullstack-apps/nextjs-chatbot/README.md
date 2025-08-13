@@ -50,11 +50,7 @@ npm run dev
 This will start the development server at [http://localhost:3000](http://localhost:3000). You can open the URL with your browser to try the application.
 
 > [!NOTE]
-> For the [Langgraph example](/examples/calling-apis/chatbot/app/(langgraph)/) to work, it's necessary to run a local Langgraph server with the following command:
-> ```bash
-> npm run langgraph:dev
-> ```
-> Alternatively, you can always use a remote one and update the `LANGGRAPH_API_URL` from the `.env` file here.
+> The [LangGraph example](/examples/calling-apis/chatbot/app/(langgraph)/) now runs directly within the Next.js application without requiring a separate LangGraph server. The LangGraph agent is integrated into the `/chat` API endpoint for improved performance and simplified deployment.
 
 ## Learn More
 
